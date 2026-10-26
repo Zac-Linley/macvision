@@ -1,5 +1,8 @@
 # MacVision
 
+[![npm](https://img.shields.io/npm/v/@zaclinley/dsh-macvision)](https://www.npmjs.com/package/@zaclinley/dsh-macvision)
+[![license](https://img.shields.io/npm/l/@zaclinley/dsh-macvision)](LICENSE)
+
 给 DeepSeek Harness 一个**离线、零依赖**的 OCR 工具：直接调 macOS 自带的 Vision 框架，把扫描件、截图、拍照文档和 PDF 里的文字，连同逐行坐标一起交给模型。
 
 不需要 API key，不需要联网，不需要装 Python/模型权重。
@@ -53,11 +56,13 @@ MacVision 只做一件事：把文档和票据的字读准、把坐标给全。�
 ## 安装
 
 ```bash
-# 在插件目录里
-cd macvision
-npm install -g .            # 或 pnpm add -g . ；也可以直接 npm link 到 profile
+# 从 npm 安装（推荐）
+npm i -g @zaclinley/dsh-macvision
+dsh plugin add @zaclinley/dsh-macvision
 
-# 注册进当前 profile
+# 或者从源码
+git clone https://github.com/Zac-Linley/macvision.git
+cd macvision && npm link
 dsh plugin add @zaclinley/dsh-macvision
 ```
 
