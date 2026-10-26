@@ -36,23 +36,37 @@ macOS 自带的 Vision 框架把这件事解决了：系统内置、`VNRecognize
 2. **只取字，不做语义**。Vision 输出「行 + 坐标 + 置信度」，字段含义交给模型。分工清楚：本地负责快和准，模型负责理解。
 3. **结果直接进上下文**。`render` 产出一段带统计头的文本，模型不需要再解析 JSON 就能引用。
 
+## 和 dsh-mac-vision 的关系
+
+npm 上已有一个同领域插件 [`dsh-mac-vision`](https://github.com/Kevoyuan/dsh-mac-vision)（Kevoyuan，2026-08 发布）。两者都用 Apple Vision 在本地做 OCR，但取舍不同：
+
+| | MacVision | dsh-mac-vision |
+|---|---|---|
+| PDF | 逐页渲染，处理 `/Rotate`，可选页码 | 未提供 |
+| 横放扫描件 | 四向 fast 探测后精读 | 未提供 |
+| 运行时依赖 | 零依赖（纯 JS + 单文件 Swift 二进制） | 需 swiftc 编译 |
+| 屏幕/窗口捕获 | 无 | 有（需录屏权限） |
+| 附带 Skill | 无 | 有 |
+
+MacVision 只做一件事：把文档和票据的字读准、把坐标给全。需要抓屏幕的场合请装 dsh-mac-vision。
+
 ## 安装
 
 ```bash
 # 在插件目录里
-cd dsh-macvision
+cd macvision
 npm install -g .            # 或 pnpm add -g . ；也可以直接 npm link 到 profile
 
 # 注册进当前 profile
-dsh plugin add dsh-macvision
+dsh plugin add @zaclinley/dsh-macvision
 ```
 
 手工安装（不想用 CLI 时）——编辑 `~/.dsh/profiles/<profile>/package.json`：
 
 ```json
 {
-  "dependencies": { "dsh-macvision": "link:/绝对路径/dsh-macvision" },
-  "dsh": { "profile": { "bundles": ["…", "dsh-macvision"] } }
+  "dependencies": { "@zaclinley/dsh-macvision": "link:/绝对路径/macvision" },
+  "dsh": { "profile": { "bundles": ["…", "@zaclinley/dsh-macvision"] } }
 }
 ```
 

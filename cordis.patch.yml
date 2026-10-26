@@ -2,4 +2,4 @@
 # 包名与 id 一致，`dsh plugin add` 之后这一层由 loader 自动应用。
 - insert:
     - id: dsh-macvision
-      name: 'dsh-macvision'
+      name: '@zaclinley/dsh-macvision'
