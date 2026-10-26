@@ -19,7 +19,8 @@
     "swift",
     "bin",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
@@ -52,5 +53,9 @@
   "homepage": "https://github.com/Zac-Linley/macvision#readme",
   "bugs": {
     "url": "https://github.com/Zac-Linley/macvision/issues"
+  },
+  "author": "Zac-Linley <Zac-Linley@users.noreply.github.com>",
+  "publishConfig": {
+    "access": "public"
   }
 }
