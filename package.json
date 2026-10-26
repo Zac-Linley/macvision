@@ -1,0 +1,56 @@
+{
+  "name": "dsh-macvision",
+  "version": "0.1.0",
+  "description": "MacVision — Apple Vision OCR for DeepSeek Harness: read scans, screenshots and PDFs on-device and hand the text (with coordinates) to the model",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "swift",
+    "bin",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build:engine": "swiftc -O -module-cache-path .build/mc swift/macocr.swift -o bin/macocr",
+    "test": "node test/smoke.mjs"
+  },
+  "os": [
+    "darwin"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis-plugin",
+    "ocr",
+    "apple-vision",
+    "macos",
+    "pdf"
+  ],
+  "bin": {
+    "macvision-ocr": "bin/macocr"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zac-Linley/macvision.git"
+  },
+  "homepage": "https://github.com/Zac-Linley/macvision#readme",
+  "bugs": {
+    "url": "https://github.com/Zac-Linley/macvision/issues"
+  }
+}
