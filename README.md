@@ -27,8 +27,9 @@ macOS 自带的 Vision 框架把这件事解决了：系统内置、`VNRecognize
         ├─ lib/tool.js    参数校验 → 文件指纹缓存 → 结果整形 → 渲染成可引用文本
         ├─ lib/engine.js  找二进制（env → 缓存 → 包内）→ 没有就用 swiftc 现编 → spawn
         └─ swift/macocr.swift
-              ├─ 图片：ImageIO 读 EXIF → 短边放大到 1600px → Vision
-              └─ PDF：CGPDFDocument 逐页 → getDrawingTransform 处理 /Rotate → 渲染 @200dpi → Vision
+              ├─ 图片：ImageIO 按目标尺寸解码（EXIF 烘进像素）→ 短边放大到 1600 → Vision
+              └─ PDF：有文字层就用 PDFKit 直抽（精确、40ms）
+                     没有才 CGPDFDocument 渲染 → getDrawingTransform 处理 /Rotate → Vision
                         │
                         └─ 定向探测：0/90/180/270 各跑一次 fast，挑最正的再 accurate 精读
 ```
@@ -91,7 +92,8 @@ dsh plugin add @zaclinley/dsh-macvision
 | `minConfidence` | number | `0` | 丢弃低置信行 |
 | `autoRotate` | boolean | `true` | 四向 fast 探测再精读，横放扫描件必备 |
 | `boxes` | boolean | `false` | 返回每行 `[x,y,w,h]` 像素坐标 |
-| `maxChars` | number | `20000` | 超出截断并置 `truncated` |
+| `maxChars` | number | `20000` | `text` 的字符上限，超出截断并置 `truncated` |
+| `maxLines` | number | `1000` | 带坐标时返回的行数上限；超出部分丢弃并计入 `stats.omittedLines` |
 
 返回：`text`（按阅读序的纯文本）、`pages[].lines[]`（文本 + 置信度 + 可选坐标）、`stats`（行数、均置信度、低置信行数、纠正的旋转角、耗时）、`truncated`。
 
@@ -103,7 +105,8 @@ dsh plugin add @zaclinley/dsh-macvision
 |---|---|
 | 拉丁文本 | 全对：`IBAN:AE290400008882268364901`、两个 15 位 TRN、`2150.00` |
 | 阿拉伯文 | `اويسيس غاردن ش م ح`（单语 `ar-SA`） |
-| 耗时 | 1.7s（含四向探测）；`--no-auto-rotate` 约 0.9s |
+| 耗时 | 1.8s（含四向探测）；`--no-auto-rotate` 约 0.9s |
+| 文字型 PDF | **44ms、12MB**，`Invoice 12655` 逐字精确（此前栅格 OCR 会读成 14055） |
 | 坐标 | 49 行全部带框，可用于还原金额列右对齐 |
 
 跑测试：
@@ -121,6 +124,8 @@ node test/smoke.mjs [图片] [PDF]
 - **手写体不可靠**。签名、批注这类只有 0.3–0.5 置信度，别当权威值。
 - **印章/水印**是物理退化，弧形文字的置信度天然低。
 - 每页位图上限 4000 万像素；超过的畸形 PDF 会被跳过而不是把内存撑爆。
+- 图片按目标长边（≤4000px、≤24MP）解码。JPEG 能在解码阶段降采样；**超大 PNG 仍要先解全图**（8000² 峰值约 375MB），这是格式决定的，不是没做优化。
+- 带 `boxes` 时默认最多返回 1000 行，长文档请按需调 `maxLines` 或配合 `pages` 分段读。
 
 ## 目录
 

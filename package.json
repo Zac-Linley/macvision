@@ -1,6 +1,6 @@
 {
   "name": "@zaclinley/dsh-macvision",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MacVision — Apple Vision OCR for DeepSeek Harness: read scans, screenshots and PDFs on-device and hand the text (with coordinates) to the model",
   "type": "module",
   "license": "MIT",

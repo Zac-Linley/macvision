@@ -10,11 +10,14 @@ import Foundation
 import Vision
 import CoreGraphics
 import ImageIO
+import PDFKit
 
 // MARK: - 常量
 
 let MAX_PAGE_PIXELS: Double = 40_000_000   // 单页位图上限，防止畸形 PDF 撑爆内存
 let MIN_SIDE_PIXELS: Double = 1600         // 短边不足则放大，小字号是 OCR 失败主因
+let MAX_SIDE_PIXELS: Double = 4000         // 单边超过就降采样，控制内存
+let MAX_IMAGE_PIXELS: Double = 24_000_000  // 面积上限（约 24MP），手机直出大图会被缩
 
 // MARK: - 工具函数
 
@@ -40,6 +43,7 @@ struct Options {
     var listLangs = false
     var noCorrect = false
     var autoRotate = true
+    var textLayer = true
 }
 
 func parseArgs() -> Options {
@@ -58,6 +62,7 @@ func parseArgs() -> Options {
         case "--fast": o.fast = true
         case "--no-correct": o.noCorrect = true
         case "--no-auto-rotate": o.autoRotate = false
+        case "--no-text-layer": o.textLayer = false
         case "--list-langs": o.listLangs = true
         case "--langs": o.langs = value(a).split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         case "--pages": o.pages = value(a)
@@ -101,6 +106,7 @@ struct Page: Encodable {
     let width: Int
     let height: Int
     let rotation: Int     // 实际生效的顺时针旋转角度（0/90/180/270）
+    let source: String    // "text-layer"（PDF 文字层直出）或 "ocr"
     let lines: [Line]
 }
 
@@ -203,7 +209,85 @@ func recognizeAdaptive(_ bitmap: CGImage, orientation: CGImagePropertyOrientatio
     return (recognize(image, orientation: .up, opts: opts), bestTurns * 90)
 }
 
+// MARK: - PDF 文字层
+
+/// 数字型 PDF 自带文字层：直接抽出来比栅格化再 OCR 准确得多，
+/// 而且不会把小字号读错（实测 200dpi OCR 会把 12655 读成 14055）。
+/// 扫描件没有文字层，函数返回空数组，调用方回落到 OCR。
+func textLayerLines(_ page: PDFPage, dpi: Double) -> [Line] {
+    guard let text = page.string, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return []
+    }
+    let box = page.bounds(for: .cropBox)
+    guard box.width > 0, box.height > 0 else { return [] }
+
+    var scale = dpi / 72.0
+    let pixels = Double(box.width) * Double(box.height) * scale * scale
+    if pixels > MAX_PAGE_PIXELS { scale *= (MAX_PAGE_PIXELS / pixels).squareRoot() }
+
+    let ns = text as NSString
+    var lines: [Line] = []
+    var loc = 0
+    while loc < ns.length {
+        var lineStart = 0, lineEnd = 0, contentsEnd = 0
+        ns.getLineStart(&lineStart, end: &lineEnd, contentsEnd: &contentsEnd,
+                        for: NSRange(location: loc, length: 0))
+        let range = NSRange(location: lineStart, length: max(0, contentsEnd - lineStart))
+        let raw = range.length > 0 ? ns.substring(with: range) : ""
+        loc = max(lineEnd, loc + 1)
+
+        guard !raw.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+        guard let selection = page.selection(for: range) else { continue }
+        let r = selection.bounds(for: page)
+        guard r.width > 0, r.height > 0 else { continue }
+
+        lines.append(Line(
+            text: raw,
+            confidence: 1,          // 文字层是精确文本，不存在识别置信度
+            box: [
+                ((r.minX - box.minX) * scale * 10).rounded() / 10,
+                ((Double(box.height) - (r.maxY - box.minY)) * scale * 10).rounded() / 10,
+                (r.width * scale * 10).rounded() / 10,
+                (r.height * scale * 10).rounded() / 10,
+            ]
+        ))
+    }
+    return lines
+}
+
+/// 文字层是否够可信：太短的（水印、页码残留）交给 OCR 反而更完整
+func textLayerUsable(_ lines: [Line]) -> Bool {
+    let chars = lines.reduce(0) { $0 + $1.text.count }
+    return lines.count >= 1 && chars >= 12
+}
+
 // MARK: - 位图
+
+/// 尺寸归一：小图放大到短边 MIN_SIDE（Vision 对 1500px 以下的小字很吃力），
+/// 大图先降采样（8000×8000 原样喂进去峰值 606MB，缩到 ≤4000 边长后回到百 MB 量级）。
+func normalizeSize(_ image: CGImage) -> CGImage {
+    let w = Double(image.width), h = Double(image.height)
+    guard w > 0, h > 0 else { return image }
+
+    let longest = max(w, h)
+    let area = w * h
+    var k = 1.0
+    if longest > MAX_SIDE_PIXELS {
+        k = MAX_SIDE_PIXELS / longest
+    } else if area > MAX_IMAGE_PIXELS {
+        k = (MAX_IMAGE_PIXELS / area).squareRoot()
+    }
+    if k < 1 {
+        let nw = max(3, Int((w * k).rounded())), nh = max(3, Int((h * k).rounded()))
+        guard let ctx = CGContext(data: nil, width: nw, height: nh, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return image }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: nw, height: nh))
+        return ctx.makeImage() ?? image
+    }
+    return upscaleIfSmall(image)
+}
 
 /// 小图放大到短边 MIN_SIDE（Vision 对 1500px 以下的小字很吃力）
 func upscaleIfSmall(_ image: CGImage) -> CGImage {
@@ -292,46 +376,71 @@ if isPDF {
     let wanted = opts.pages.map { parsePages($0, pageCount: pageCount) } ?? Array(1...pageCount)
     guard !wanted.isEmpty else { fail("--pages 没有选中任何有效页") }
 
+    // 文字层走 PDFKit，栅格化走 CGPDFDocument：两条路各取所长
+    let kit = opts.textLayer ? PDFDocument(url: url) : nil
+
     for number in wanted {
+        // 路径 A：有文字层就直接抽，精确且快（不经过像素，识别错误归零）
+        if let kitPage = kit?.page(at: number - 1), opts.textLayer {
+            let textLines = textLayerLines(kitPage, dpi: opts.dpi)
+            if textLayerUsable(textLines) {
+                let box = kitPage.bounds(for: .cropBox)
+                var scale = opts.dpi / 72.0
+                let px = Double(box.width) * Double(box.height) * scale * scale
+                if px > MAX_PAGE_PIXELS { scale *= (MAX_PAGE_PIXELS / px).squareRoot() }
+                if min(Double(box.width), Double(box.height)) * scale < MIN_SIDE_PIXELS {
+                    scale *= MIN_SIDE_PIXELS / (min(Double(box.width), Double(box.height)) * scale)
+                }
+                pages.append(Page(page: number,
+                                  width: Int((Double(box.width) * scale).rounded()),
+                                  height: Int((Double(box.height) * scale).rounded()),
+                                  rotation: 0, source: "text-layer", lines: textLines))
+                continue
+            }
+        }
+        // 路径 B：扫描件没有文字层，渲染后做 OCR
         guard let pageRef = doc.page(at: number), let bitmap = renderPDFPage(pageRef, dpi: opts.dpi) else {
             warn("第 \(number) 页渲染失败，已跳过")
             continue
         }
         let (lines, turns) = recognizeAdaptive(bitmap, orientation: .up, opts: opts)
         pages.append(Page(page: number, width: bitmap.width, height: bitmap.height,
-                          rotation: turns, lines: lines))
+                          rotation: turns, source: "ocr", lines: lines))
     }
 } else {
-    // 用 ImageIO 拿到 EXIF 方向，手机拍的发票常常是横的
-    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-          let raw = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+    // 用 ImageIO 直接按目标尺寸解码：先 CreateImageAtIndex 再缩会把 8000² 全解出来
+    // （实测峰值 535MB），而 thumbnail 能在解码阶段就降采样。
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
         fail("图片读不出来（支持 png/jpeg/heic/tiff/webp）: \(opts.path)")
     }
-    var orientation: CGImagePropertyOrientation = .up
-    if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-       let raw = props[kCGImagePropertyOrientation] as? UInt32,
-       let parsed = CGImagePropertyOrientation(rawValue: raw) {
-        orientation = parsed
+    let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+    let pixelW = (props?[kCGImagePropertyPixelWidth] as? Double) ?? 0
+    let pixelH = (props?[kCGImagePropertyPixelHeight] as? Double) ?? 0
+
+    // 目标长边：既不超过 MAX_SIDE，也不超过面积上限
+    var target = max(pixelW, pixelH)
+    if target <= 0 { target = MAX_SIDE_PIXELS }
+    target = min(target, MAX_SIDE_PIXELS)
+    if pixelW * pixelH > MAX_IMAGE_PIXELS, pixelW > 0, pixelH > 0 {
+        let ratio = pixelW / pixelH
+        let maxLongest = (MAX_IMAGE_PIXELS * ratio).squareRoot()
+        target = min(target, maxLongest)
     }
-    // 手机拍的发票常带 EXIF 方向：用 thumbnail 的 transform 把方向烘进像素，
-    // 之后所有路径都按 .up 处理，免得方向在两次变换之间丢掉
-    var upright = raw
-    if orientation != .up {
-        let side = max(raw.width, raw.height)
-        let thumbOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: side,
-        ]
-        if let transformed = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) {
-            upright = transformed
-            orientation = .up
-        }
+
+    // transform: true 顺带把 EXIF 方向烘进像素，后面统一按 .up 处理
+    let thumbOptions: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: max(3, Int(target.rounded())),
+    ]
+    guard let upright = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) else {
+        fail("图片读不出来（支持 png/jpeg/heic/tiff/webp）: \(opts.path)")
     }
-    let bitmap = upscaleIfSmall(upright)
+    let orientation: CGImagePropertyOrientation = .up
+    let bitmap = normalizeSize(upright)
     let (lines, turns) = recognizeAdaptive(bitmap, orientation: orientation, opts: opts)
     pages.append(Page(page: 1, width: bitmap.width, height: bitmap.height,
-                      rotation: turns, lines: lines))
+                      rotation: turns, source: "ocr", lines: lines))
 }
 
 let fullText = pages.map { $0.lines.map(\.text).joined(separator: "\n") }.joined(separator: "\n\n")
